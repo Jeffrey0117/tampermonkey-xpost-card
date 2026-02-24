@@ -12,7 +12,7 @@ Tampermonkey userscript that adds a **PNG** button to every X (Twitter) post. On
 
 ## Preview
 
-![preview](assets/preview.png)
+![preview](assets/preview-v2.png)
 
 1. Click the **PNG** button on any tweet action bar
 2. Tweet text is auto-translated to zh-TW
