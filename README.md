@@ -12,11 +12,12 @@ Tampermonkey userscript that adds a **PNG** button to every X (Twitter) post. On
 
 ## Preview
 
-Click the **PNG** button on any tweet action bar:
+![preview](assets/preview.png)
 
-1. Tweet text is auto-translated to zh-TW
-2. A card preview appears with highlighted Chinese text
-3. Click **Download PNG** to save
+1. Click the **PNG** button on any tweet action bar
+2. Tweet text is auto-translated to zh-TW
+3. A card preview appears with highlighted Chinese text
+4. Click **Download PNG** to save
 
 ## Install
 
