@@ -9,6 +9,7 @@
 // @grant        GM_download
 // @grant        GM_xmlhttpRequest
 // @connect      translate.googleapis.com
+// @connect      pbs.twimg.com
 // @require      https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js
 // ==/UserScript==
 
@@ -83,6 +84,19 @@
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
     }
+
+    .tm-xpng-media{ margin-top:24px; display:grid; gap:8px; border-radius:16px; overflow:hidden; }
+    .tm-xpng-media.cols-1{ grid-template-columns:1fr; }
+    .tm-xpng-media.cols-2{ grid-template-columns:1fr 1fr; }
+    .tm-xpng-media img{ width:100%; height:100%; object-fit:cover; display:block; }
+
+    .tm-xpng-quote{ margin-top:24px; padding:20px 24px; border:2px solid #e1e8ed; border-radius:16px; background:#f7f9fa; }
+    .tm-xpng-quote-head{ display:flex; align-items:center; gap:10px; }
+    .tm-xpng-quote-avatar{ width:36px; height:36px; border-radius:50%; overflow:hidden; }
+    .tm-xpng-quote-avatar img{ width:100%; height:100%; object-fit:cover; display:block; }
+    .tm-xpng-quote-name{ font-weight:800; font-size:22px; }
+    .tm-xpng-quote-handle{ font-size:20px; opacity:.6; font-weight:700; }
+    .tm-xpng-quote-body{ margin-top:10px; font-size:28px; line-height:1.5; font-weight:800; }
 
     .tm-xpng-stats{
       margin-top:28px;
@@ -191,6 +205,27 @@
     });
   }
 
+  // ---------- Fetch image as base64 (bypasses CORS via GM_xmlhttpRequest) ----------
+  function fetchImageAsDataUrl(url) {
+    return new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: 'blob',
+        onload(resp) {
+          if (!resp.response) return resolve('');
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(resp.response);
+        },
+        onerror: () => resolve(''),
+        ontimeout: () => resolve(''),
+        timeout: 8000,
+      });
+    });
+  }
+
   // ---------- Loading overlay ----------
   function showLoading(msg = '翻譯中...') {
     const el = document.createElement('div');
@@ -247,7 +282,36 @@
       || q(actionBar, 'a[aria-label*="View"] span');
     const views = safeText(viewsEl) || '';
 
-    return { displayName, handle, timeText, datetime, text, avatarUrl, tweetUrl, replies, retweets, likes, views };
+    // Images (exclude images inside quoted tweet)
+    const quoteTweetEl = q(article, 'div[data-testid="quoteTweet"]');
+    const allPhotoImgs = qa(article, '[data-testid="tweetPhoto"] img');
+    const images = allPhotoImgs
+      .filter(img => !quoteTweetEl || !quoteTweetEl.contains(img))
+      .map(img => ({ src: img.src }))
+      .filter(img => img.src);
+
+    // Quoted tweet
+    let quotedTweet = null;
+    if (quoteTweetEl) {
+      const qtTextEl = q(quoteTweetEl, 'div[data-testid="tweetText"]');
+      const qtUserName = q(quoteTweetEl, 'div[data-testid="User-Name"]');
+      let qtDisplayName = '';
+      let qtHandle = '';
+      if (qtUserName) {
+        const qtSpans = qa(qtUserName, 'span').map(s => safeText(s)).filter(Boolean);
+        qtDisplayName = qtSpans.find(t => !t.startsWith('@')) || qtSpans[0] || '';
+        qtHandle = normalizeHandle(qtSpans.find(t => t.startsWith('@')) || '');
+      }
+      const qtAvatarImg = q(quoteTweetEl, 'img[src*="profile_images"]');
+      quotedTweet = {
+        displayName: qtDisplayName,
+        handle: qtHandle,
+        text: safeText(qtTextEl),
+        avatarUrl: qtAvatarImg?.src || '',
+      };
+    }
+
+    return { displayName, handle, timeText, datetime, text, avatarUrl, tweetUrl, replies, retweets, likes, views, images, quotedTweet };
   }
 
   // ---------- Build card HTML ----------
@@ -271,9 +335,49 @@
       .filter(Boolean)
       .join('<br>');
 
+    // Build media grid HTML
+    const images = data.images || [];
+    let mediaHtml = '';
+    if (images.length > 0) {
+      const colsClass = images.length === 1 ? 'cols-1' : 'cols-2';
+      const imgsHtml = images.map(img => {
+        const src = escapeHtml(img.dataUrl || img.src);
+        return `<img src="${src}">`;
+      }).join('');
+      mediaHtml = `<div class="tm-xpng-media ${colsClass}">${imgsHtml}</div>`;
+    }
+
+    // Build quoted tweet HTML
+    let quoteHtml = '';
+    if (data.quotedTweet) {
+      const qt = data.quotedTweet;
+      const qtText = (qt.cnText || qt.text || '').trim();
+      const qtBodyHtml = escapeHtml(qtText)
+        .split('\n')
+        .map(line => {
+          const trimmed = line.trim();
+          if (!trimmed) return '';
+          return `<span class="tm-hl">${line}</span>`;
+        })
+        .filter(Boolean)
+        .join('<br>');
+      const qtAvatarSrc = qt.avatarDataUrl || qt.avatarUrl || '';
+      quoteHtml = `
+        <div class="tm-xpng-quote">
+          <div class="tm-xpng-quote-head">
+            ${qtAvatarSrc ? `<div class="tm-xpng-quote-avatar"><img src="${escapeHtml(qtAvatarSrc)}"></div>` : ''}
+            <div class="tm-xpng-quote-name">${escapeHtml(qt.displayName || '')}</div>
+            <div class="tm-xpng-quote-handle">${escapeHtml(qt.handle || '')}</div>
+          </div>
+          <div class="tm-xpng-quote-body">${qtBodyHtml}</div>
+        </div>`;
+    }
+
+    const avatarSrc = data.avatarDataUrl || data.avatarUrl || '';
+
     stage.innerHTML = `
       <div class="tm-xpng-row">
-        <div class="tm-xpng-avatar">${data.avatarUrl ? `<img src="${data.avatarUrl}" crossorigin="anonymous">` : ''}</div>
+        <div class="tm-xpng-avatar">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}">` : ''}</div>
         <div style="flex:1; min-width:0;">
           <div class="tm-xpng-head">
             <div class="tm-xpng-name">${escapeHtml(data.displayName || 'Unknown')}</div>
@@ -284,6 +388,10 @@
           <div class="tm-xpng-body">
             ${bodyHtml}
           </div>
+
+          ${mediaHtml}
+
+          ${quoteHtml}
 
           ${(data.replies || data.retweets || data.likes || data.views) ? `
           <div class="tm-xpng-stats">
@@ -304,53 +412,62 @@
   // inline spans. Fix: compute each line fragment with getClientRects(), create
   // absolutely positioned divs with solid yellow background, hide CSS highlight.
   function applyHighlightRects(stage) {
-    const body = stage.querySelector('.tm-xpng-body');
-    if (!body) return () => {};
+    // Process all containers that hold .tm-hl spans (main body + quoted tweet body)
+    const containers = Array.from(stage.querySelectorAll('.tm-xpng-body, .tm-xpng-quote-body'));
+    if (containers.length === 0) return () => {};
 
-    const prevPos = body.style.position;
-    body.style.position = 'relative';
-    const bodyRect = body.getBoundingClientRect();
-    const hlSpans = Array.from(body.querySelectorAll('.tm-hl'));
+    const prevPositions = [];
     const created = [];
+    const allHlSpans = [];
 
-    for (const span of hlSpans) {
-      const rects = span.getClientRects();
-      for (const r of rects) {
-        const top = r.top - bodyRect.top;
-        const left = r.left - bodyRect.left;
-        // Bottom 42% highlight (matching the gradient: transparent 58%, yellow 58%)
-        const hlTop = top + r.height * 0.58;
-        const hlHeight = r.height * 0.42;
+    for (const body of containers) {
+      prevPositions.push(body.style.position);
+      body.style.position = 'relative';
+      const bodyRect = body.getBoundingClientRect();
+      const hlSpans = Array.from(body.querySelectorAll('.tm-hl'));
 
-        const div = document.createElement('div');
-        div.style.cssText = `
-          position:absolute;
-          left:${left - 3}px;
-          top:${hlTop}px;
-          width:${r.width + 6}px;
-          height:${hlHeight}px;
-          background:rgba(255,242,0,0.95);
-          border-radius:2px;
-          pointer-events:none;
-        `;
-        body.appendChild(div);
-        created.push(div);
+      for (const span of hlSpans) {
+        allHlSpans.push(span);
+        const rects = span.getClientRects();
+        for (const r of rects) {
+          const top = r.top - bodyRect.top;
+          const left = r.left - bodyRect.left;
+          // Bottom 42% highlight (matching the gradient: transparent 58%, yellow 58%)
+          const hlTop = top + r.height * 0.58;
+          const hlHeight = r.height * 0.42;
+
+          const div = document.createElement('div');
+          div.style.cssText = `
+            position:absolute;
+            left:${left - 3}px;
+            top:${hlTop}px;
+            width:${r.width + 6}px;
+            height:${hlHeight}px;
+            background:rgba(255,242,0,0.95);
+            border-radius:2px;
+            pointer-events:none;
+          `;
+          body.appendChild(div);
+          created.push(div);
+        }
+        // Hide CSS background, raise text above the yellow divs
+        span.style.background = 'none';
+        span.style.position = 'relative';
+        span.style.zIndex = '1';
       }
-      // Hide CSS background, raise text above the yellow divs
-      span.style.background = 'none';
-      span.style.position = 'relative';
-      span.style.zIndex = '1';
     }
 
     // Cleanup function — restore after capture
     return () => {
       created.forEach(el => el.remove());
-      hlSpans.forEach(span => {
+      allHlSpans.forEach(span => {
         span.style.background = '';
         span.style.position = '';
         span.style.zIndex = '';
       });
-      body.style.position = prevPos;
+      containers.forEach((body, i) => {
+        body.style.position = prevPositions[i];
+      });
     };
   }
 
@@ -359,12 +476,13 @@
     const imgs = Array.from(stage.querySelectorAll('img'));
     await Promise.all(imgs.map(img => new Promise(res => {
       if (img.complete) return res();
-      img.onload = () => res();
-      img.onerror = () => res();
+      const t = setTimeout(res, 5000);
+      img.onload = () => { clearTimeout(t); res(); };
+      img.onerror = () => { clearTimeout(t); res(); };
     })));
 
     if (document.fonts && document.fonts.ready) {
-      await document.fonts.ready;
+      await Promise.race([document.fonts.ready, sleep(3000)]);
     }
 
     // Replace CSS highlights with positioned divs for html2canvas compatibility
@@ -405,13 +523,38 @@
       return;
     }
 
-    // Auto-translate to Traditional Chinese
+    // Translate + preload images as base64 (bypasses CORS for html2canvas)
     const hideLoading = showLoading('翻譯中...');
     try {
-      data.cnText = await translateText(data.text, 'zh-TW');
+      const imageUrls = data.images.map(img => img.src);
+      if (data.quotedTweet?.avatarUrl) imageUrls.push(data.quotedTweet.avatarUrl);
+      if (data.avatarUrl) imageUrls.push(data.avatarUrl);
+
+      const results = await Promise.all([
+        translateText(data.text, 'zh-TW'),
+        data.quotedTweet ? translateText(data.quotedTweet.text, 'zh-TW') : Promise.resolve(null),
+        ...imageUrls.map(url => fetchImageAsDataUrl(url)),
+      ]);
+
+      data.cnText = results[0];
+      if (data.quotedTweet) {
+        data.quotedTweet.cnText = results[1];
+      }
+
+      // Map base64 data URLs back
+      let idx = 2;
+      for (const img of data.images) {
+        img.dataUrl = results[idx++] || img.src;
+      }
+      if (data.quotedTweet?.avatarUrl) {
+        data.quotedTweet.avatarDataUrl = results[idx++] || '';
+      }
+      if (data.avatarUrl) {
+        data.avatarDataUrl = results[idx++] || '';
+      }
     } catch (e) {
-      console.error('XCard translation failed, using original:', e);
-      data.cnText = data.text;
+      console.error('XCard translation/image preload failed:', e);
+      data.cnText = data.cnText || data.text;
     } finally {
       hideLoading();
     }
