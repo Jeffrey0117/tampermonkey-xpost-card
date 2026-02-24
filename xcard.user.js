@@ -90,13 +90,8 @@
     .tm-xpng-media.cols-2{ grid-template-columns:1fr 1fr; }
     .tm-xpng-media img{ width:100%; height:100%; object-fit:cover; display:block; }
 
-    .tm-xpng-quote{ margin-top:24px; padding:20px 24px; border:2px solid #e1e8ed; border-radius:16px; background:#f7f9fa; }
-    .tm-xpng-quote-head{ display:flex; align-items:center; gap:10px; }
-    .tm-xpng-quote-avatar{ width:36px; height:36px; border-radius:50%; overflow:hidden; }
-    .tm-xpng-quote-avatar img{ width:100%; height:100%; object-fit:cover; display:block; }
-    .tm-xpng-quote-name{ font-weight:800; font-size:22px; }
-    .tm-xpng-quote-handle{ font-size:20px; opacity:.6; font-weight:700; }
-    .tm-xpng-quote-body{ margin-top:10px; font-size:28px; line-height:1.5; font-weight:800; }
+    .tm-xpng-quote{ margin-top:24px; border-radius:16px; overflow:hidden; }
+    .tm-xpng-quote img{ width:100%; display:block; }
 
     .tm-xpng-stats{
       margin-top:28px;
@@ -249,6 +244,33 @@
     });
   }
 
+  // ---------- Screenshot a DOM element (for quoted tweets) ----------
+  async function screenshotElement(el) {
+    if (!el) return '';
+    // Swap images to base64 to bypass CORS (loading overlay hides the flash)
+    const imgs = Array.from(el.querySelectorAll('img'));
+    const origSrcs = imgs.map(img => img.src);
+    const b64s = await Promise.all(
+      origSrcs.map(src => src ? fetchImageAsDataUrl(src) : Promise.resolve(''))
+    );
+    imgs.forEach((img, i) => { if (b64s[i]) img.src = b64s[i]; });
+    try {
+      const canvas = await window.html2canvas(el, {
+        backgroundColor: null,
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      });
+      return canvas.toDataURL('image/png');
+    } catch (e) {
+      console.error('XCard: screenshotElement failed:', e);
+      return '';
+    } finally {
+      imgs.forEach((img, i) => { img.src = origSrcs[i]; });
+    }
+  }
+
   // ---------- Loading overlay ----------
   function showLoading(msg = '翻譯中...') {
     const el = document.createElement('div');
@@ -260,10 +282,21 @@
 
   // ---------- Data extraction ----------
   function extractTweetData(article) {
-    const textEl = q(article, 'div[data-testid="tweetText"]');
+    // Find quoted tweet container FIRST so we can exclude it from main-tweet selectors
+    const quoteTweetEl = q(article, '[data-testid="quoteTweet"]');
+
+    // Main tweet text (skip any tweetText inside quoted tweet)
+    const allTextEls = qa(article, 'div[data-testid="tweetText"]');
+    const textEl = quoteTweetEl
+      ? allTextEls.find(el => !quoteTweetEl.contains(el))
+      : allTextEls[0];
     const text = safeText(textEl);
 
-    const userName = q(article, 'div[data-testid="User-Name"]');
+    // Main tweet user info (skip quoted tweet's User-Name)
+    const allUserNames = qa(article, 'div[data-testid="User-Name"]');
+    const userName = quoteTweetEl
+      ? allUserNames.find(el => !quoteTweetEl.contains(el))
+      : allUserNames[0];
     let displayName = '';
     let handle = '';
 
@@ -306,35 +339,13 @@
     const views = safeText(viewsEl) || '';
 
     // Images (exclude images inside quoted tweet)
-    const quoteTweetEl = q(article, 'div[data-testid="quoteTweet"]');
     const allPhotoImgs = qa(article, '[data-testid="tweetPhoto"] img');
     const images = allPhotoImgs
       .filter(img => !quoteTweetEl || !quoteTweetEl.contains(img))
       .map(img => ({ src: img.src }))
       .filter(img => img.src);
 
-    // Quoted tweet
-    let quotedTweet = null;
-    if (quoteTweetEl) {
-      const qtTextEl = q(quoteTweetEl, 'div[data-testid="tweetText"]');
-      const qtUserName = q(quoteTweetEl, 'div[data-testid="User-Name"]');
-      let qtDisplayName = '';
-      let qtHandle = '';
-      if (qtUserName) {
-        const qtSpans = qa(qtUserName, 'span').map(s => safeText(s)).filter(Boolean);
-        qtDisplayName = qtSpans.find(t => !t.startsWith('@')) || qtSpans[0] || '';
-        qtHandle = normalizeHandle(qtSpans.find(t => t.startsWith('@')) || '');
-      }
-      const qtAvatarImg = q(quoteTweetEl, 'img[src*="profile_images"]');
-      quotedTweet = {
-        displayName: qtDisplayName,
-        handle: qtHandle,
-        text: safeText(qtTextEl),
-        avatarUrl: qtAvatarImg?.src || '',
-      };
-    }
-
-    return { displayName, handle, timeText, datetime, text, avatarUrl, tweetUrl, replies, retweets, likes, views, images, quotedTweet };
+    return { displayName, handle, timeText, datetime, text, avatarUrl, tweetUrl, replies, retweets, likes, views, images, quoteTweetEl };
   }
 
   // ---------- Build card HTML ----------
@@ -370,30 +381,10 @@
       mediaHtml = `<div class="tm-xpng-media ${colsClass}">${imgsHtml}</div>`;
     }
 
-    // Build quoted tweet HTML
+    // Quoted tweet as screenshot image
     let quoteHtml = '';
-    if (data.quotedTweet) {
-      const qt = data.quotedTweet;
-      const qtText = (qt.cnText || qt.text || '').trim();
-      const qtBodyHtml = escapeHtml(qtText)
-        .split('\n')
-        .map(line => {
-          const trimmed = line.trim();
-          if (!trimmed) return '';
-          return `<span class="tm-hl">${line}</span>`;
-        })
-        .filter(Boolean)
-        .join('<br>');
-      const qtAvatarSrc = qt.avatarDataUrl || qt.avatarUrl || '';
-      quoteHtml = `
-        <div class="tm-xpng-quote">
-          <div class="tm-xpng-quote-head">
-            ${qtAvatarSrc ? `<div class="tm-xpng-quote-avatar"><img src="${escapeHtml(qtAvatarSrc)}"></div>` : ''}
-            <div class="tm-xpng-quote-name">${escapeHtml(qt.displayName || '')}</div>
-            <div class="tm-xpng-quote-handle">${escapeHtml(qt.handle || '')}</div>
-          </div>
-          <div class="tm-xpng-quote-body">${qtBodyHtml}</div>
-        </div>`;
+    if (data.quoteTweetImage) {
+      quoteHtml = `<div class="tm-xpng-quote"><img src="${escapeHtml(data.quoteTweetImage)}"></div>`;
     }
 
     const avatarSrc = data.avatarDataUrl || data.avatarUrl || '';
@@ -435,8 +426,7 @@
   // inline spans. Fix: compute each line fragment with getClientRects(), create
   // absolutely positioned divs with solid yellow background, hide CSS highlight.
   function applyHighlightRects(stage) {
-    // Process all containers that hold .tm-hl spans (main body + quoted tweet body)
-    const containers = Array.from(stage.querySelectorAll('.tm-xpng-body, .tm-xpng-quote-body'));
+    const containers = Array.from(stage.querySelectorAll('.tm-xpng-body'));
     if (containers.length === 0) return () => {};
 
     const prevPositions = [];
@@ -546,31 +536,25 @@
       return;
     }
 
-    // Translate + preload images as base64 (bypasses CORS for html2canvas)
+    // Translate main text + screenshot quoted tweet + preload images — all in parallel
     const hideLoading = showLoading('翻譯中...');
     try {
       const imageUrls = data.images.map(img => img.src);
-      if (data.quotedTweet?.avatarUrl) imageUrls.push(data.quotedTweet.avatarUrl);
       if (data.avatarUrl) imageUrls.push(data.avatarUrl);
 
       const results = await Promise.all([
         translateText(data.text, 'zh-TW'),
-        data.quotedTweet ? translateText(data.quotedTweet.text, 'zh-TW') : Promise.resolve(null),
+        data.quoteTweetEl ? screenshotElement(data.quoteTweetEl) : Promise.resolve(''),
         ...imageUrls.map(url => fetchImageAsDataUrl(url)),
       ]);
 
       data.cnText = results[0];
-      if (data.quotedTweet) {
-        data.quotedTweet.cnText = results[1];
-      }
+      data.quoteTweetImage = results[1];
 
       // Map base64 data URLs back
       let idx = 2;
       for (const img of data.images) {
         img.dataUrl = results[idx++] || img.src;
-      }
-      if (data.quotedTweet?.avatarUrl) {
-        data.quotedTweet.avatarDataUrl = results[idx++] || '';
       }
       if (data.avatarUrl) {
         data.avatarDataUrl = results[idx++] || '';
