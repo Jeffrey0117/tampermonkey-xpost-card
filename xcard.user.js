@@ -177,8 +177,8 @@
   }
 
   // ---------- Google Translate ----------
-  function translateText(text, targetLang = 'zh-TW') {
-    return new Promise((resolve, reject) => {
+  function translateChunk(text, targetLang) {
+    return new Promise((resolve) => {
       GM_xmlhttpRequest({
         method: 'GET',
         url: `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`,
@@ -203,6 +203,29 @@
         timeout: 10000,
       });
     });
+  }
+
+  // Split long text into chunks at sentence boundaries to avoid Google Translate
+  // URL length limits (long GET URLs cause partial/broken translations).
+  const CHUNK_MAX = 800;
+  async function translateText(text, targetLang = 'zh-TW') {
+    if (!text || text.length <= CHUNK_MAX) {
+      return translateChunk(text, targetLang);
+    }
+    // Split at sentence-ending punctuation followed by whitespace/newline
+    const sentences = text.match(/[^.!?\n]+[.!?\n]+[\s]*/g) || [text];
+    const chunks = [];
+    let buf = '';
+    for (const s of sentences) {
+      if (buf.length + s.length > CHUNK_MAX && buf) {
+        chunks.push(buf);
+        buf = '';
+      }
+      buf += s;
+    }
+    if (buf) chunks.push(buf);
+    const results = await Promise.all(chunks.map(c => translateChunk(c, targetLang)));
+    return results.join('');
   }
 
   // ---------- Fetch image as base64 (bypasses CORS via GM_xmlhttpRequest) ----------
