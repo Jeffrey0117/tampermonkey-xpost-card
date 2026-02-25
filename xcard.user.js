@@ -37,12 +37,11 @@
       position:fixed; inset:0; background:rgba(0,0,0,.55);
       display:flex; align-items:center; justify-content:center;
       z-index:999999;
-      padding: 20px;
+      padding: 16px;
       overflow:auto;
     }
     .tm-xpng-preview-wrap{
-      display:flex; flex-direction:column; align-items:center; gap:0;
-      max-height:100%; overflow:visible;
+      display:flex; flex-direction:column; align-items:center; gap:6px;
     }
 
     .tm-xpng-stage{
@@ -537,9 +536,9 @@
       await Promise.race([document.fonts.ready, sleep(3000)]);
     }
 
-    // Remove preview scale + contenteditable before capture
-    const prevTransform = stage.style.transform;
-    stage.style.transform = 'none';
+    // Remove preview zoom + contenteditable before capture
+    const prevZoom = stage.style.zoom;
+    stage.style.zoom = '1';
     const editableEls = Array.from(stage.querySelectorAll('[contenteditable="true"]'));
     editableEls.forEach(el => { el.blur(); el.setAttribute('contenteditable', 'false'); });
 
@@ -554,9 +553,9 @@
       logging: false,
     });
 
-    // Restore scale + CSS highlights + contenteditable
+    // Restore zoom + CSS highlights + contenteditable
     cleanupHL();
-    stage.style.transform = prevTransform;
+    stage.style.zoom = prevZoom;
     editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
 
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -620,17 +619,6 @@
     wrapper.className = 'tm-xpng-preview-wrap';
 
     const stage = buildStageHTML(data);
-
-    // Scale card to fit viewport (card is 1080px + padding for PNG quality)
-    const stageFullW = 1080 + 140; // width + padding*2
-    const maxW = window.innerWidth - 60;
-    const maxH = window.innerHeight - 120; // reserve space for toolbar + buttons
-    const scaleW = Math.min(1, maxW / stageFullW);
-    const scaleH = Math.min(1, maxH / 800); // 800 = rough typical card height
-    const previewScale = Math.min(scaleW, scaleH, 0.55);
-    stage.style.transform = `scale(${previewScale})`;
-    stage.style.transformOrigin = 'top center';
-
     wrapper.appendChild(stage);
 
     // Auto-clean empty highlight spans when user edits (prevents yellow on blank lines)
@@ -676,6 +664,14 @@
 
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
+
+    // Stage is now in DOM — measure actual size and zoom to fit viewport
+    const sw = stage.offsetWidth;
+    const sh = stage.offsetHeight;
+    const maxW = window.innerWidth - 40;
+    const maxH = window.innerHeight - 100; // reserve for toolbar + buttons
+    const zoom = Math.min(maxW / sw, maxH / sh, 0.5);
+    stage.style.zoom = String(zoom);
 
     overlay.addEventListener('click', async (e) => {
       const act = e.target?.getAttribute?.('data-act');
