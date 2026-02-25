@@ -474,6 +474,7 @@
       const hlSpans = Array.from(body.querySelectorAll('.tm-hl'));
 
       for (const span of hlSpans) {
+        if (!span.textContent.trim()) continue; // skip empty spans (blank lines)
         allHlSpans.push(span);
         const rects = span.getClientRects();
         for (const r of rects) {
@@ -613,6 +614,16 @@
 
     const stage = buildStageHTML(data);
     wrapper.appendChild(stage);
+
+    // Auto-clean empty highlight spans when user edits (prevents yellow on blank lines)
+    const bodyEl = stage.querySelector('.tm-xpng-body');
+    if (bodyEl) {
+      bodyEl.addEventListener('input', () => {
+        bodyEl.querySelectorAll('.tm-hl').forEach(span => {
+          if (!span.textContent.trim()) span.classList.remove('tm-hl');
+        });
+      });
+    }
 
     // Toolbar — outside stage, won't appear in PNG
     const toolbar = document.createElement('div');
