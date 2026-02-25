@@ -18,7 +18,7 @@
 
   // ---------- Styles ----------
   GM_addStyle(`
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@500;700;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@500;700;900&family=Noto+Serif+TC:wght@500;700;900&family=LXGW+WenKai+TC:wght@400;700&display=swap');
 
     .tm-xpng-btn{
       cursor:pointer;
@@ -142,6 +142,25 @@
       background:rgba(255,255,255,.25);
     }
 
+    .tm-xpng-toolbar{
+      display:flex; align-items:center; gap:8px; margin-top:10px;
+      font-family:system-ui,sans-serif;
+    }
+    .tm-xpng-toolbar-label{
+      font-size:12px; color:rgba(255,255,255,.45); font-weight:600;
+    }
+    .tm-xpng-font-btn{
+      cursor:pointer; padding:4px 12px; border-radius:999px;
+      font-size:13px; font-weight:700; color:rgba(255,255,255,.7);
+      border:1px solid rgba(255,255,255,.2); background:transparent;
+      transition: all .15s;
+    }
+    .tm-xpng-font-btn:hover{ background:rgba(255,255,255,.12); color:#fff; }
+    .tm-xpng-font-btn.active{
+      background:rgba(255,255,255,.2); color:#fff;
+      border-color:rgba(255,255,255,.5);
+    }
+
     .tm-xpng-loading{
       position:fixed; inset:0; background:rgba(0,0,0,.4);
       display:flex; align-items:center; justify-content:center;
@@ -150,6 +169,13 @@
       font-family: 'Noto Sans TC', system-ui, sans-serif;
     }
   `);
+
+  // ---------- Font options ----------
+  const FONTS = [
+    { label: '黑體', family: "'Noto Sans TC', sans-serif" },
+    { label: '宋體', family: "'Noto Serif TC', serif" },
+    { label: '文楷', family: "'LXGW WenKai TC', cursive" },
+  ];
 
   // ---------- Helpers ----------
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -588,11 +614,28 @@
     const stage = buildStageHTML(data);
     wrapper.appendChild(stage);
 
-    // Hint + action buttons — outside stage, won't appear in PNG
-    const hint = document.createElement('div');
-    hint.style.cssText = 'color:rgba(255,255,255,.5); font-size:13px; margin-top:10px; font-family:system-ui,sans-serif;';
-    hint.textContent = '點擊卡片文字可直接編輯';
-    wrapper.appendChild(hint);
+    // Toolbar — outside stage, won't appear in PNG
+    const toolbar = document.createElement('div');
+    toolbar.className = 'tm-xpng-toolbar';
+    const hintSpan = document.createElement('span');
+    hintSpan.className = 'tm-xpng-toolbar-label';
+    hintSpan.textContent = '點擊文字可編輯 ·';
+    toolbar.appendChild(hintSpan);
+
+    FONTS.forEach((f, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tm-xpng-font-btn' + (i === 0 ? ' active' : '');
+      btn.textContent = f.label;
+      btn.style.fontFamily = f.family;
+      btn.addEventListener('click', () => {
+        stage.style.fontFamily = f.family;
+        toolbar.querySelectorAll('.tm-xpng-font-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+      toolbar.appendChild(btn);
+    });
+    wrapper.appendChild(toolbar);
 
     const actions = document.createElement('div');
     actions.className = 'tm-xpng-actions';
