@@ -75,6 +75,14 @@
       font-weight:900;
     }
 
+    .tm-xpng-body[contenteditable="true"]{ cursor:text; }
+    .tm-xpng-body[contenteditable="true"]:hover{
+      outline:2px dashed rgba(0,0,0,.12); outline-offset:6px; border-radius:8px;
+    }
+    .tm-xpng-body[contenteditable="true"]:focus{
+      outline:2px solid rgba(0,0,0,.25); outline-offset:6px; border-radius:8px;
+    }
+
     /* Each line gets its own highlight span — no bleed on line breaks */
     .tm-hl{
       display:inline;
@@ -399,7 +407,7 @@
             <div class="tm-xpng-time">· ${escapeHtml(data.timeText || '')}</div>
           </div>
 
-          <div class="tm-xpng-body">
+          <div class="tm-xpng-body" contenteditable="true" spellcheck="false">
             ${bodyHtml}
           </div>
 
@@ -498,6 +506,10 @@
       await Promise.race([document.fonts.ready, sleep(3000)]);
     }
 
+    // Disable contenteditable before capture (remove outline/cursor artifacts)
+    const editableEls = Array.from(stage.querySelectorAll('[contenteditable="true"]'));
+    editableEls.forEach(el => { el.blur(); el.setAttribute('contenteditable', 'false'); });
+
     // Replace CSS highlights with positioned divs for html2canvas compatibility
     const cleanupHL = applyHighlightRects(stage);
 
@@ -509,8 +521,9 @@
       logging: false,
     });
 
-    // Restore CSS highlights
+    // Restore CSS highlights + contenteditable
     cleanupHL();
+    editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
 
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -575,7 +588,12 @@
     const stage = buildStageHTML(data);
     wrapper.appendChild(stage);
 
-    // Action buttons — outside stage, won't appear in PNG
+    // Hint + action buttons — outside stage, won't appear in PNG
+    const hint = document.createElement('div');
+    hint.style.cssText = 'color:rgba(255,255,255,.5); font-size:13px; margin-top:10px; font-family:system-ui,sans-serif;';
+    hint.textContent = '點擊卡片文字可直接編輯';
+    wrapper.appendChild(hint);
+
     const actions = document.createElement('div');
     actions.className = 'tm-xpng-actions';
     actions.innerHTML = `
