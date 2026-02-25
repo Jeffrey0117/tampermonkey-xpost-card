@@ -11,6 +11,7 @@
 // @connect      translate.googleapis.com
 // @connect      pbs.twimg.com
 // @require      https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js
+// @require      https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js
 // ==/UserScript==
 
 (function () {
@@ -114,10 +115,20 @@
     }
     .tm-xpng-stat-val{ color:#000; margin-right:4px; }
 
+    .tm-xpng-qr{
+      position:absolute;
+      top:28px;
+      right:32px;
+      width:80px;
+      height:80px;
+      opacity:0.85;
+    }
+    .tm-xpng-qr img{ width:100%; height:100%; display:block; }
+
     .tm-xpng-watermark{
       position:absolute;
       bottom:24px;
-      right:32px;
+      left:32px;
       font-size:18px;
       font-weight:700;
       opacity:0.18;
@@ -179,6 +190,19 @@
     { label: '宋體', family: "'Noto Serif TC', serif" },
     { label: '文楷', family: "'LXGW WenKai TC', cursive" },
   ];
+
+  // ---------- QR Code ----------
+  function generateQrDataUrl(text) {
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(text);
+      qr.make();
+      return qr.createDataURL(4, 0);
+    } catch (e) {
+      console.error('XCard: QR generation failed:', e);
+      return '';
+    }
+  }
 
   // ---------- Helpers ----------
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -425,8 +449,10 @@
     }
 
     const avatarSrc = data.avatarDataUrl || data.avatarUrl || '';
+    const qrDataUrl = data.tweetUrl ? generateQrDataUrl(data.tweetUrl) : '';
 
     stage.innerHTML = `
+      ${qrDataUrl ? `<div class="tm-xpng-qr"><img src="${qrDataUrl}"></div>` : ''}
       <div class="tm-xpng-row">
         <div class="tm-xpng-avatar">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}">` : ''}</div>
         <div style="flex:1; min-width:0;">
