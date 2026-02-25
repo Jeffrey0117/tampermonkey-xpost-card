@@ -37,8 +37,12 @@
       position:fixed; inset:0; background:rgba(0,0,0,.55);
       display:flex; align-items:center; justify-content:center;
       z-index:999999;
-      padding: 24px;
+      padding: 20px;
       overflow:auto;
+    }
+    .tm-xpng-preview-wrap{
+      display:flex; flex-direction:column; align-items:center; gap:0;
+      max-height:100%; overflow:visible;
     }
 
     .tm-xpng-stage{
@@ -533,7 +537,9 @@
       await Promise.race([document.fonts.ready, sleep(3000)]);
     }
 
-    // Disable contenteditable before capture (remove outline/cursor artifacts)
+    // Remove preview scale + contenteditable before capture
+    const prevTransform = stage.style.transform;
+    stage.style.transform = 'none';
     const editableEls = Array.from(stage.querySelectorAll('[contenteditable="true"]'));
     editableEls.forEach(el => { el.blur(); el.setAttribute('contenteditable', 'false'); });
 
@@ -548,8 +554,9 @@
       logging: false,
     });
 
-    // Restore CSS highlights + contenteditable
+    // Restore scale + CSS highlights + contenteditable
     cleanupHL();
+    stage.style.transform = prevTransform;
     editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
 
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -610,9 +617,20 @@
     overlay.className = 'tm-xpng-overlay';
 
     const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex; flex-direction:column; align-items:center; gap:0;';
+    wrapper.className = 'tm-xpng-preview-wrap';
 
     const stage = buildStageHTML(data);
+
+    // Scale card to fit viewport (card is 1080px + padding for PNG quality)
+    const stageFullW = 1080 + 140; // width + padding*2
+    const maxW = window.innerWidth - 60;
+    const maxH = window.innerHeight - 120; // reserve space for toolbar + buttons
+    const scaleW = Math.min(1, maxW / stageFullW);
+    const scaleH = Math.min(1, maxH / 800); // 800 = rough typical card height
+    const previewScale = Math.min(scaleW, scaleH, 0.55);
+    stage.style.transform = `scale(${previewScale})`;
+    stage.style.transformOrigin = 'top center';
+
     wrapper.appendChild(stage);
 
     // Auto-clean empty highlight spans when user edits (prevents yellow on blank lines)
