@@ -47,8 +47,8 @@
 
     .tm-xpng-stage{
       position:relative;
-      width:1080px;
-      padding:70px;
+      width:1200px;
+      padding:80px;
       background:#ffffff;
       font-family: 'Noto Sans TC', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
       color:#000;
@@ -117,11 +117,11 @@
 
     .tm-xpng-qr{
       position:absolute;
-      top:28px;
-      right:32px;
-      width:80px;
-      height:80px;
-      opacity:0.85;
+      top:30px;
+      right:34px;
+      width:56px;
+      height:56px;
+      opacity:0.7;
     }
     .tm-xpng-qr img{ width:100%; height:100%; display:block; }
 
