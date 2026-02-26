@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XCard - X/Threads Post to Chinese Card PNG
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Add a PNG button on X/Threads posts; auto-translate to Chinese, render a white card with neon-highlight text and download as image.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -26,18 +26,203 @@
   let ttPolicy;
   if (typeof trustedTypes !== 'undefined' && trustedTypes.createPolicy) {
     try {
-      ttPolicy = trustedTypes.createPolicy('xcard', { createHTML: (s) => s });
-    } catch (_) { /* policy name already taken, ignore */ }
+      ttPolicy = trustedTypes.createPolicy('default', { createHTML: (s) => s });
+    } catch (_) {
+      try { ttPolicy = trustedTypes.createPolicy('xcard', { createHTML: (s) => s }); }
+      catch (_2) { /* ignore */ }
+    }
   }
   function safeInnerHTML(el, html) {
     el.innerHTML = ttPolicy ? ttPolicy.createHTML(html) : html;
   }
 
+  // ---------- Pure Canvas renderer (Threads fallback, zero CSP issues) ----------
+  function loadImg(src) {
+    if (!src) return Promise.resolve(null);
+    return new Promise(resolve => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  function wrapText(ctx, text, maxW) {
+    const lines = [];
+    for (const paragraph of text.split('\n')) {
+      if (!paragraph.trim()) { lines.push(''); continue; }
+      const words = paragraph.split('');
+      let line = '';
+      for (const ch of words) {
+        const test = line + ch;
+        if (ctx.measureText(test).width > maxW && line) {
+          lines.push(line);
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line) lines.push(line);
+    }
+    return lines;
+  }
+
+  async function renderCardCanvas(data, fontFamily, scale = 2) {
+    const W = 1200, PAD = 80, AVATAR = 92, GAP = 22;
+    const contentW = W - PAD * 2 - AVATAR - GAP;
+    const bodyFontSize = 38, bodyLH = 1.55;
+    const lineH = bodyFontSize * bodyLH;
+
+    // Pre-measure body text to compute card height
+    const measureCanvas = document.createElement('canvas');
+    const mCtx = measureCanvas.getContext('2d');
+    mCtx.font = `900 ${bodyFontSize}px ${fontFamily}`;
+    const bodyText = (data.cnText || data.text || '').trim().replace(/\n{3,}/g, '\n\n');
+    const bodyLines = wrapText(mCtx, bodyText, contentW);
+
+    // Compute total height
+    let y = PAD; // top padding
+    const headerH = 40;
+    y += headerH + 18; // header + gap
+    y += bodyLines.length * lineH; // body
+    const images = (data.images || []).filter(img => img.dataUrl || img.src);
+    if (images.length > 0) { y += 24 + 300; } // media
+    if (data.replies || data.retweets || data.likes) { y += 28 + 30; } // stats
+    y += PAD; // bottom padding
+    const H = Math.max(y, 300);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W * scale;
+    canvas.height = H * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+
+    // White background with rounded corners
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(0, 0, W, H, 28);
+    ctx.fill();
+
+    // QR code (top right)
+    const qrUrl = data.tweetUrl ? generateQrDataUrl(data.tweetUrl) : '';
+    if (qrUrl) {
+      const qrImg = await loadImg(qrUrl);
+      if (qrImg) { ctx.globalAlpha = 0.7; ctx.drawImage(qrImg, W - 34 - 56, 30, 56, 56); ctx.globalAlpha = 1; }
+    }
+
+    // Avatar (circle clip)
+    const avatarSrc = data.avatarDataUrl || data.avatarUrl || '';
+    const avatarImg = await loadImg(avatarSrc);
+    const avX = PAD, avY = PAD;
+    if (avatarImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(avX + AVATAR / 2, avY + AVATAR / 2, AVATAR / 2, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(avatarImg, avX, avY, AVATAR, AVATAR);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = '#eee';
+      ctx.beginPath();
+      ctx.arc(avX + AVATAR / 2, avY + AVATAR / 2, AVATAR / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Header: name, handle, time
+    let hx = PAD + AVATAR + GAP;
+    ctx.fillStyle = '#000';
+    ctx.font = `900 34px ${fontFamily}`;
+    ctx.fillText(data.displayName || '', hx, PAD + 32);
+    hx += ctx.measureText(data.displayName || '').width + 12;
+    ctx.font = `700 26px ${fontFamily}`;
+    ctx.globalAlpha = 0.7;
+    ctx.fillText(data.handle || '', hx, PAD + 30);
+    hx += ctx.measureText(data.handle || '').width + 12;
+    ctx.globalAlpha = 0.6;
+    ctx.font = `700 24px ${fontFamily}`;
+    ctx.fillText('· ' + (data.timeText || ''), hx, PAD + 29);
+    ctx.globalAlpha = 1;
+
+    // Body text with yellow highlight
+    const bx = PAD + AVATAR + GAP;
+    let by = PAD + headerH + 18;
+    ctx.font = `900 ${bodyFontSize}px ${fontFamily}`;
+    for (const line of bodyLines) {
+      if (line.trim()) {
+        const tw = ctx.measureText(line).width;
+        const hlY = by + lineH * 0.58 - bodyFontSize * 0.15;
+        const hlH = lineH * 0.42;
+        ctx.fillStyle = 'rgba(255, 242, 0, 0.95)';
+        ctx.fillRect(bx - 3, hlY, tw + 6, hlH);
+      }
+      ctx.fillStyle = '#000';
+      ctx.fillText(line, bx, by + bodyFontSize);
+      by += lineH;
+    }
+
+    // Media images
+    if (images.length > 0) {
+      by += 24;
+      const imgW = images.length === 1 ? contentW : (contentW - 8) / 2;
+      const imgH = 300;
+      for (let i = 0; i < Math.min(images.length, 4); i++) {
+        const mImg = await loadImg(images[i].dataUrl || images[i].src);
+        if (!mImg) continue;
+        const ix = bx + (i % 2) * (imgW + 8);
+        const iy = by + Math.floor(i / 2) * (imgH + 8);
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(ix, iy, imgW, imgH, 16);
+        ctx.clip();
+        // Cover fit
+        const ar = mImg.width / mImg.height;
+        const tar = imgW / imgH;
+        let sw, sh, sx, sy;
+        if (ar > tar) { sh = mImg.height; sw = sh * tar; sx = (mImg.width - sw) / 2; sy = 0; }
+        else { sw = mImg.width; sh = sw / tar; sx = 0; sy = (mImg.height - sh) / 2; }
+        ctx.drawImage(mImg, sx, sy, sw, sh, ix, iy, imgW, imgH);
+        ctx.restore();
+      }
+      by += imgH + (images.length > 2 ? imgH + 8 : 0);
+    }
+
+    // Stats
+    if (data.replies || data.retweets || data.likes) {
+      by += 28;
+      ctx.font = `700 26px ${fontFamily}`;
+      let sx = bx;
+      for (const [val, label] of [[data.replies, 'Replies'], [data.retweets, 'Reposts'], [data.likes, 'Likes']]) {
+        if (!val) continue;
+        ctx.fillStyle = '#000';
+        ctx.fillText(val, sx, by + 22);
+        sx += ctx.measureText(val).width + 4;
+        ctx.fillStyle = '#536471';
+        ctx.fillText(label, sx, by + 22);
+        sx += ctx.measureText(label).width + 36;
+      }
+    }
+
+    // Watermark
+    ctx.font = `700 18px ${fontFamily}`;
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = '#000';
+    ctx.fillText(IS_THREADS ? 'ThreadCard' : 'XCard', 32, H - 24);
+    ctx.globalAlpha = 1;
+
+    return canvas;
+  }
+
+  // ---------- Load Google Fonts via <link> (avoids CSP style-src block on Threads) ----------
+  const _fontLink = document.createElement('link');
+  _fontLink.rel = 'stylesheet';
+  _fontLink.href = 'https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@500;700;900&family=Noto+Serif+TC:wght@500;700;900&family=LXGW+WenKai+TC:wght@400;700&display=swap';
+  (document.head || document.documentElement).appendChild(_fontLink);
+
   // ---------- Styles ----------
   // Use textContent instead of GM_addStyle to avoid TrustedHTML violations
   const _style = document.createElement('style');
   _style.textContent = `
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@500;700;900&family=Noto+Serif+TC:wght@500;700;900&family=LXGW+WenKai+TC:wght@400;700&display=swap');
 
     .tm-xpng-btn{
       cursor:pointer;
@@ -481,7 +666,18 @@
       if (!handle.startsWith('@')) handle = '@' + handle;
       displayName = safeText(userLinks[0]) || handle.slice(1);
 
-      const avatarImg = userLinks.map(link => link.querySelector('img')).find(img => img?.src);
+      // Try img inside user links first
+      let avatarImg = userLinks.map(link => link.querySelector('img')).find(img => img?.src);
+      // Fallback: find small avatar-like img anywhere in container (Threads may place avatar outside link)
+      if (!avatarImg) {
+        const allImgs = qa(container, 'img');
+        avatarImg = allImgs.find(img => {
+          if (!img.src || img.src.startsWith('data:')) return false;
+          if (img.closest('picture')) return false; // skip post content images
+          const w = img.width || img.naturalWidth || 0;
+          return w > 0 && w <= 80;
+        });
+      }
       avatarUrl = avatarImg?.src || '';
     }
 
@@ -501,22 +697,42 @@
     const textEls = qa(container, '[dir="auto"]');
     const textParts = [];
     const seen = new Set();
+    // Build a set of elements to exclude (time-related, avatar-adjacent, etc.)
+    const timeParentA = timeEl ? timeEl.closest('a') : null;
+
+    // Find reply boundary: the first post link with a DIFFERENT href marks where replies start
+    const allPostLinks = qa(container, 'a[href*="/post/"]');
+    const replyBoundary = postHref
+      ? allPostLinks.find(a => a.getAttribute('href') !== postHref)
+      : null;
+
     for (const el of textEls) {
+      // Skip elements that appear AFTER the reply boundary (they belong to replies)
+      if (replyBoundary && (el.compareDocumentPosition(replyBoundary) & Node.DOCUMENT_POSITION_PRECEDING)) continue;
       if (el.closest('time')) continue;
       if (el.closest('[role="button"]')) continue;
+      // Skip elements that contain a <time> descendant (wrapper around timestamp)
+      if (el.querySelector('time')) continue;
       // Skip username links, but ALLOW post-link wrappers that contain the text body
       const closestA = el.closest('a');
       if (closestA && closestA.matches('a[href^="/@"]:not([href*="/post/"])')) continue;
+      // Skip elements inside the same <a> as the time element (e.g., "18小時" next to <time>)
+      if (timeParentA && closestA === timeParentA) continue;
       // Prefer leaf [dir="auto"] nodes — skip parents that contain child [dir="auto"]
       if (el.querySelector('[dir="auto"]')) continue;
 
       const clone = el.cloneNode(true);
       clone.querySelectorAll('[role="button"]').forEach(child => child.remove());
       const t = (clone.innerText || clone.textContent || '').trim();
-      if (t && !seen.has(t)) {
-        seen.add(t);
-        textParts.push(t);
-      }
+      if (!t || seen.has(t)) continue;
+      // Skip relative time strings (e.g., "18小時", "2d", "3天")
+      if (/^\d+\s*(秒鐘?|分鐘?|小時|天|日|週|月|年|[smhdwy])$/i.test(t)) continue;
+      // Skip UI labels (e.g., "Thread" badge, "Suggested", "Ad")
+      if (/^(Thread|串文|字串文|Suggested|推薦|廣告|Sponsored|Ad)$/i.test(t)) continue;
+      // Skip interaction/stat text with optional multiplier (e.g., "7.3萬次瀏覽", "148 則回覆", "27 likes")
+      if (/^(查看|view|顯示)?\s*[\d,.]+\s*(萬|千|億|[KkMmBb])?\s*(次瀏覽|次觀看|則回覆|個回覆|回覆|則留言|個留言|留言|個讚|讚|次轉發|次分享|replies?|likes?|reposts?|shares?|views?|comments?)$/i.test(t)) continue;
+      seen.add(t);
+      textParts.push(t);
     }
     text = textParts.join('\n');
 
@@ -685,46 +901,63 @@
   }
 
   // ---------- Render & Download ----------
-  async function renderAndDownload(stage, filenameBase = 'xcard') {
-    const imgs = Array.from(stage.querySelectorAll('img'));
-    await Promise.all(imgs.map(img => new Promise(res => {
-      if (img.complete) return res();
-      const t = setTimeout(res, 5000);
-      img.onload = () => { clearTimeout(t); res(); };
-      img.onerror = () => { clearTimeout(t); res(); };
-    })));
+  async function renderAndDownload(stage, filenameBase = 'xcard', data, fontFamily) {
+    let canvas;
 
-    if (document.fonts && document.fonts.ready) {
-      await Promise.race([document.fonts.ready, sleep(3000)]);
+    if (IS_THREADS && data) {
+      // Threads: pure Canvas 2D renderer (bypasses Trusted Types CSP entirely)
+      // Read edited text from the live stage before rendering
+      const bodyEl = stage.querySelector('.tm-xpng-body');
+      if (bodyEl) data.cnText = bodyEl.innerText || bodyEl.textContent || data.cnText;
+      const font = fontFamily || FONTS[0].family;
+      try {
+        canvas = await renderCardCanvas(data, font, 2);
+      } catch (err) {
+        alert('Canvas render error: ' + (err?.message || err));
+        return;
+      }
+    } else {
+      // X/Twitter: html2canvas
+      const imgs = Array.from(stage.querySelectorAll('img'));
+      await Promise.all(imgs.map(img => new Promise(res => {
+        if (img.complete) return res();
+        const t = setTimeout(res, 5000);
+        img.onload = () => { clearTimeout(t); res(); };
+        img.onerror = () => { clearTimeout(t); res(); };
+      })));
+
+      if (document.fonts && document.fonts.ready) {
+        await Promise.race([document.fonts.ready, sleep(3000)]);
+      }
+
+      const prevZoom = stage.style.zoom;
+      stage.style.zoom = '1';
+      const editableEls = Array.from(stage.querySelectorAll('[contenteditable="true"]'));
+      editableEls.forEach(el => { el.blur(); el.setAttribute('contenteditable', 'false'); });
+      const cleanupHL = applyHighlightRects(stage);
+
+      try {
+        canvas = await window.html2canvas(stage, {
+          backgroundColor: null, scale: 2, useCORS: true, allowTaint: true, logging: false,
+        });
+      } catch (err) {
+        alert('html2canvas error: ' + (err?.message || err));
+        cleanupHL();
+        stage.style.zoom = prevZoom;
+        editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
+        return;
+      }
+
+      cleanupHL();
+      stage.style.zoom = prevZoom;
+      editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
     }
 
-    // Remove preview zoom + contenteditable before capture
-    const prevZoom = stage.style.zoom;
-    stage.style.zoom = '1';
-    const editableEls = Array.from(stage.querySelectorAll('[contenteditable="true"]'));
-    editableEls.forEach(el => { el.blur(); el.setAttribute('contenteditable', 'false'); });
-
-    // Replace CSS highlights with positioned divs for html2canvas compatibility
-    const cleanupHL = applyHighlightRects(stage);
-
-    const canvas = await window.html2canvas(stage, {
-      backgroundColor: null,
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      logging: false,
-    });
-
-    // Restore zoom + CSS highlights + contenteditable
-    cleanupHL();
-    stage.style.zoom = prevZoom;
-    editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
-
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `${filenameBase}-${ts}.png`;
 
     if (typeof GM_download === 'function') {
+      const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
       const url = URL.createObjectURL(blob);
       GM_download({ url, name: filename, saveAs: true });
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
@@ -732,7 +965,9 @@
       const a = document.createElement('a');
       a.href = canvas.toDataURL('image/png');
       a.download = filename;
+      document.body.appendChild(a);
       a.click();
+      setTimeout(() => a.remove(), 1000);
     }
   }
 
@@ -845,7 +1080,8 @@
       }
       if (act === 'download') {
         const base = (data.handle || 'xcard').replace('@', '') || 'xcard';
-        await renderAndDownload(stage, base);
+        const font = stage.style.fontFamily || FONTS[0].family;
+        await renderAndDownload(stage, base, data, font);
         overlay.remove();
         return;
       }
