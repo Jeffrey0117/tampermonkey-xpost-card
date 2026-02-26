@@ -13,6 +13,7 @@
 // @connect      pbs.twimg.com
 // @connect      fbcdn.net
 // @connect      cdninstagram.com
+// @connect      localhost
 // @require      https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js
 // @require      https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js
 // ==/UserScript==
@@ -900,6 +901,76 @@
     };
   }
 
+  // ---------- Render to Canvas (shared by download & sendbot) ----------
+  async function renderToCanvas(stage, data, fontFamily) {
+    if (IS_THREADS && data) {
+      const bodyEl = stage.querySelector('.tm-xpng-body');
+      if (bodyEl) data.cnText = bodyEl.innerText || bodyEl.textContent || data.cnText;
+      return renderCardCanvas(data, fontFamily, 2);
+    }
+
+    // X/Twitter: html2canvas
+    const imgs = Array.from(stage.querySelectorAll('img'));
+    await Promise.all(imgs.map(img => new Promise(res => {
+      if (img.complete) return res();
+      const t = setTimeout(res, 5000);
+      img.onload = () => { clearTimeout(t); res(); };
+      img.onerror = () => { clearTimeout(t); res(); };
+    })));
+
+    if (document.fonts && document.fonts.ready) {
+      await Promise.race([document.fonts.ready, sleep(3000)]);
+    }
+
+    const prevZoom = stage.style.zoom;
+    stage.style.zoom = '1';
+    const editableEls = Array.from(stage.querySelectorAll('[contenteditable="true"]'));
+    editableEls.forEach(el => { el.blur(); el.setAttribute('contenteditable', 'false'); });
+    const cleanupHL = applyHighlightRects(stage);
+
+    try {
+      const canvas = await window.html2canvas(stage, {
+        backgroundColor: null, scale: 2, useCORS: true, allowTaint: true, logging: false,
+      });
+      return canvas;
+    } finally {
+      cleanupHL();
+      stage.style.zoom = prevZoom;
+      editableEls.forEach(el => el.setAttribute('contenteditable', 'true'));
+    }
+  }
+
+  // ---------- Send to Bot via CloudPipe ----------
+  function sendToBot(base64) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: 'http://localhost:8787/api/xcard/send',
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ image: base64 }),
+        onload(resp) {
+          try {
+            const result = JSON.parse(resp.responseText);
+            if (result.success) {
+              resolve(result);
+            } else {
+              reject(new Error(result.error || 'Unknown error'));
+            }
+          } catch (e) {
+            reject(new Error('Invalid response from CloudPipe'));
+          }
+        },
+        onerror() {
+          reject(new Error('CloudPipe 未啟動 (localhost:8787)'));
+        },
+        ontimeout() {
+          reject(new Error('CloudPipe 連線逾時'));
+        },
+        timeout: 30000,
+      });
+    });
+  }
+
   // ---------- Render & Download ----------
   async function renderAndDownload(stage, filenameBase = 'xcard', data, fontFamily) {
     let canvas;
@@ -1024,6 +1095,21 @@
     const bodyEl = stage.querySelector('.tm-xpng-body');
     if (bodyEl) {
       bodyEl.addEventListener('input', () => {
+        // Re-apply highlight to any bare text nodes or new elements created by contenteditable
+        for (const node of Array.from(bodyEl.childNodes)) {
+          if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+            // Bare text node → wrap in .tm-hl span
+            const span = document.createElement('span');
+            span.className = 'tm-hl';
+            bodyEl.insertBefore(span, node);
+            span.appendChild(node);
+          } else if (node.nodeType === Node.ELEMENT_NODE && node.tagName !== 'BR'
+                     && !node.classList?.contains('tm-hl')) {
+            // <div>/<p> created by Enter key → add tm-hl class
+            if (node.textContent.trim()) node.classList.add('tm-hl');
+          }
+        }
+        // Remove highlight from empty spans
         bodyEl.querySelectorAll('.tm-hl').forEach(span => {
           if (!span.textContent.trim()) span.classList.remove('tm-hl');
         });
@@ -1058,7 +1144,8 @@
     safeInnerHTML(actions, `
       <div class="tm-xpng-action" data-act="close">Close</div>
       <div class="tm-xpng-action" data-act="download">Download PNG</div>
-    `);
+      <div class="tm-xpng-action" data-act="sendbot">發到 Bot</div>
+`);
     wrapper.appendChild(actions);
 
     overlay.appendChild(wrapper);
@@ -1083,6 +1170,23 @@
         const font = stage.style.fontFamily || FONTS[0].family;
         await renderAndDownload(stage, base, data, font);
         overlay.remove();
+        return;
+      }
+      if (act === 'sendbot') {
+        const btn = e.target;
+        btn.textContent = '傳送中...';
+        btn.style.pointerEvents = 'none';
+        try {
+          const canvas = await renderToCanvas(stage, data, stage.style.fontFamily || FONTS[0].family);
+          const base64 = canvas.toDataURL('image/png').split(',')[1];
+          await sendToBot(base64);
+          btn.textContent = 'Sent!';
+          setTimeout(() => overlay.remove(), 800);
+        } catch (err) {
+          btn.textContent = '發到 Bot';
+          btn.style.pointerEvents = '';
+          alert('發送失敗: ' + (err?.message || err));
+        }
         return;
       }
       if (e.target === overlay) overlay.remove();
