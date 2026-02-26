@@ -941,13 +941,13 @@
   }
 
   // ---------- Send to Bot via CloudPipe ----------
-  function sendToBot(base64) {
+  function sendToBot(base64, meta) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'POST',
         url: 'http://localhost:8787/api/xcard/send',
         headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({ image: base64 }),
+        data: JSON.stringify({ image: base64, meta }),
         onload(resp) {
           try {
             const result = JSON.parse(resp.responseText);
@@ -1179,7 +1179,15 @@
         try {
           const canvas = await renderToCanvas(stage, data, stage.style.fontFamily || FONTS[0].family);
           const base64 = canvas.toDataURL('image/png').split(',')[1];
-          await sendToBot(base64);
+          const meta = {
+            displayName: data.displayName,
+            handle: data.handle,
+            text: data.text,
+            tweetUrl: data.tweetUrl,
+            likes: data.likes,
+            retweets: data.retweets,
+          };
+          await sendToBot(base64, meta);
           btn.textContent = 'Sent!';
           setTimeout(() => overlay.remove(), 800);
         } catch (err) {
