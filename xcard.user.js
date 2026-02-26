@@ -1,15 +1,18 @@
 // ==UserScript==
-// @name         XCard - X Post to Chinese Card PNG
+// @name         XCard - X/Threads Post to Chinese Card PNG
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Add a PNG button on X posts; auto-translate to Chinese, render a white card with neon-highlight text and download as image.
+// @version      1.1
+// @description  Add a PNG button on X/Threads posts; auto-translate to Chinese, render a white card with neon-highlight text and download as image.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
+// @match        https://www.threads.com/*
 // @grant        GM_addStyle
 // @grant        GM_download
 // @grant        GM_xmlhttpRequest
 // @connect      translate.googleapis.com
 // @connect      pbs.twimg.com
+// @connect      fbcdn.net
+// @connect      cdninstagram.com
 // @require      https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js
 // @require      https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js
 // ==/UserScript==
@@ -17,8 +20,23 @@
 (function () {
   'use strict';
 
+  const IS_THREADS = location.hostname.includes('threads.com') || location.hostname.includes('threads.net');
+
+  // ---------- Trusted Types policy (required by Threads CSP) ----------
+  let ttPolicy;
+  if (typeof trustedTypes !== 'undefined' && trustedTypes.createPolicy) {
+    try {
+      ttPolicy = trustedTypes.createPolicy('xcard', { createHTML: (s) => s });
+    } catch (_) { /* policy name already taken, ignore */ }
+  }
+  function safeInnerHTML(el, html) {
+    el.innerHTML = ttPolicy ? ttPolicy.createHTML(html) : html;
+  }
+
   // ---------- Styles ----------
-  GM_addStyle(`
+  // Use textContent instead of GM_addStyle to avoid TrustedHTML violations
+  const _style = document.createElement('style');
+  _style.textContent = `
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@500;700;900&family=Noto+Serif+TC:wght@500;700;900&family=LXGW+WenKai+TC:wght@400;700&display=swap');
 
     .tm-xpng-btn{
@@ -182,7 +200,8 @@
       color:#fff; font-size:20px; font-weight:700;
       font-family: 'Noto Sans TC', system-ui, sans-serif;
     }
-  `);
+  `;
+  (document.head || document.documentElement).appendChild(_style);
 
   // ---------- Font options ----------
   const FONTS = [
@@ -409,6 +428,123 @@
     return { displayName, handle, timeText, datetime, text, avatarUrl, tweetUrl, replies, retweets, likes, views, images, quoteTweetEl };
   }
 
+  // ---------- Threads: find post container ----------
+  function findThreadsContainer(postLink) {
+    let el = postLink;
+    for (let i = 0; i < 20; i++) {
+      el = el.parentElement;
+      if (!el) return null;
+      const hasUserLink = el.querySelector('a[href^="/@"]:not([href*="/post/"])');
+      const hasStatButtons = el.querySelectorAll('div[role="button"]').length >= 2;
+      if (hasUserLink && hasStatButtons) return el;
+    }
+    return null;
+  }
+
+  // ---------- Threads: find stats bar ----------
+  function findThreadsStatsBar(container) {
+    const buttons = qa(container, 'div[role="button"]');
+    if (buttons.length < 2) return null;
+
+    const parentCounts = new Map();
+    for (const btn of buttons) {
+      if (!btn.querySelector('svg')) continue;
+      let p = btn.parentElement;
+      for (let i = 0; i < 3; i++) {
+        if (!p) break;
+        parentCounts.set(p, (parentCounts.get(p) || 0) + 1);
+        p = p.parentElement;
+      }
+    }
+
+    let best = null;
+    let bestCount = 0;
+    for (const [el, count] of parentCounts) {
+      if (count > bestCount || (count === bestCount && best && best.contains(el))) {
+        best = el;
+        bestCount = count;
+      }
+    }
+    return best;
+  }
+
+  // ---------- Threads: data extraction ----------
+  function extractThreadsData(container) {
+    const userLinks = qa(container, 'a[href^="/@"]:not([href*="/post/"])');
+    let handle = '';
+    let displayName = '';
+    let avatarUrl = '';
+
+    if (userLinks.length > 0) {
+      const href = userLinks[0].getAttribute('href') || '';
+      handle = href.startsWith('/') ? href.slice(1) : href;
+      if (!handle.startsWith('@')) handle = '@' + handle;
+      displayName = safeText(userLinks[0]) || handle.slice(1);
+
+      const avatarImg = userLinks.map(link => link.querySelector('img')).find(img => img?.src);
+      avatarUrl = avatarImg?.src || '';
+    }
+
+    const timeEl = q(container, 'time[datetime]');
+    const datetime = timeEl?.getAttribute('datetime') || '';
+    const timeTitle = timeEl?.getAttribute('title') || '';
+    const timeText = timeTitle || safeText(timeEl) || (datetime ? new Date(datetime).toLocaleString() : '');
+
+    const postLinkEl = q(container, 'a[href*="/post/"]');
+    const postHref = postLinkEl?.getAttribute('href') || '';
+    const tweetUrl = postHref
+      ? (postHref.startsWith('http') ? postHref : location.origin + postHref)
+      : location.href;
+
+    let text = '';
+    // Broadened: both span AND div with dir="auto" (Threads DOM changes frequently)
+    const textEls = qa(container, '[dir="auto"]');
+    const textParts = [];
+    const seen = new Set();
+    for (const el of textEls) {
+      if (el.closest('time')) continue;
+      if (el.closest('[role="button"]')) continue;
+      // Skip username links, but ALLOW post-link wrappers that contain the text body
+      const closestA = el.closest('a');
+      if (closestA && closestA.matches('a[href^="/@"]:not([href*="/post/"])')) continue;
+      // Prefer leaf [dir="auto"] nodes — skip parents that contain child [dir="auto"]
+      if (el.querySelector('[dir="auto"]')) continue;
+
+      const clone = el.cloneNode(true);
+      clone.querySelectorAll('[role="button"]').forEach(child => child.remove());
+      const t = (clone.innerText || clone.textContent || '').trim();
+      if (t && !seen.has(t)) {
+        seen.add(t);
+        textParts.push(t);
+      }
+    }
+    text = textParts.join('\n');
+
+    const imageEls = qa(container, 'picture img[draggable="false"]');
+    const images = imageEls.map(img => ({ src: img.src })).filter(img => img.src);
+
+    let likes = '';
+    let replies = '';
+    let retweets = '';
+    const statButtons = qa(container, 'div[role="button"]');
+    for (const btn of statButtons) {
+      const svgTitle = q(btn, 'svg title');
+      if (!svgTitle) continue;
+      const titleText = safeText(svgTitle).toLowerCase();
+      const countSpan = btn.querySelector('span');
+      const count = countSpan ? safeText(countSpan) : '';
+      if (titleText.includes('like') || titleText.includes('讚')) {
+        likes = count;
+      } else if (titleText.includes('reply') || titleText.includes('回覆')) {
+        replies = count;
+      } else if (titleText.includes('repost') || titleText.includes('轉發')) {
+        retweets = count;
+      }
+    }
+
+    return { displayName, handle, timeText, datetime, text, avatarUrl, tweetUrl, replies, retweets, likes, views: '', images, quoteTweetEl: null };
+  }
+
   // ---------- Build card HTML ----------
   function buildStageHTML(data) {
     const stage = document.createElement('div');
@@ -451,7 +587,7 @@
     const avatarSrc = data.avatarDataUrl || data.avatarUrl || '';
     const qrDataUrl = data.tweetUrl ? generateQrDataUrl(data.tweetUrl) : '';
 
-    stage.innerHTML = `
+    safeInnerHTML(stage, `
       ${qrDataUrl ? `<div class="tm-xpng-qr"><img src="${qrDataUrl}"></div>` : ''}
       <div class="tm-xpng-row">
         <div class="tm-xpng-avatar">${avatarSrc ? `<img src="${escapeHtml(avatarSrc)}">` : ''}</div>
@@ -479,8 +615,8 @@
           </div>` : ''}
         </div>
       </div>
-      <div class="tm-xpng-watermark">XCard</div>
-    `;
+      <div class="tm-xpng-watermark">${IS_THREADS ? 'ThreadCard' : 'XCard'}</div>
+    `);
     return stage;
   }
 
@@ -602,9 +738,11 @@
 
   // ---------- Preview ----------
   async function openPreview(article) {
-    const data = extractTweetData(article);
+    const data = IS_THREADS ? extractThreadsData(article) : extractTweetData(article);
     if (!data.text) {
-      alert('抓不到貼文內容（tweetText selector 失效）。');
+      alert(IS_THREADS
+        ? '抓不到貼文內容（Threads DOM selector 可能已變更）。'
+        : '抓不到貼文內容（tweetText selector 失效）。');
       return;
     }
 
@@ -682,10 +820,10 @@
 
     const actions = document.createElement('div');
     actions.className = 'tm-xpng-actions';
-    actions.innerHTML = `
+    safeInnerHTML(actions, `
       <div class="tm-xpng-action" data-act="close">Close</div>
       <div class="tm-xpng-action" data-act="download">Download PNG</div>
-    `;
+    `);
     wrapper.appendChild(actions);
 
     overlay.appendChild(wrapper);
@@ -716,7 +854,7 @@
   }
 
   // ---------- Inject buttons ----------
-  function injectButtons() {
+  function injectXButtons() {
     const articles = document.querySelectorAll('article');
     for (const article of articles) {
       const actionBar = article.querySelector('div[role="group"]');
@@ -735,6 +873,40 @@
       });
 
       actionBar.appendChild(btn);
+    }
+  }
+
+  function injectThreadsButtons() {
+    const postLinks = document.querySelectorAll('a[href*="/post/"]');
+    for (const link of postLinks) {
+      const container = findThreadsContainer(link);
+      if (!container) continue;
+      if (container.querySelector('.tm-xpng-btn')) continue;
+
+      const statsBar = findThreadsStatsBar(container);
+      if (!statsBar) continue;
+      if (statsBar.querySelector('.tm-xpng-btn')) continue;
+
+      const btn = document.createElement('button');
+      btn.className = 'tm-xpng-btn';
+      btn.type = 'button';
+      btn.textContent = 'PNG';
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        openPreview(container);
+      });
+
+      statsBar.appendChild(btn);
+    }
+  }
+
+  function injectButtons() {
+    if (IS_THREADS) {
+      injectThreadsButtons();
+    } else {
+      injectXButtons();
     }
   }
 
