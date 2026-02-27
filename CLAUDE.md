@@ -80,3 +80,19 @@ Create `config.json` in project root:
 - Also loaded as Telegram bot via `config.xcard.botPath` in CloudPipe
 - CloudPipe `services/xcard.js` provides userscript → Telegram bridge
 - MEEI module path: `C:\Users\jeffb\Desktop\code\MEEI\`
+
+## CloudPipe Ecosystem
+
+Access other projects through the Gateway SDK:
+
+```javascript
+const { gateway, telegram } = require('@jeffrey0117/cloudpipe')
+
+// Call any ecosystem tool (e.g. host a generated card image via Upimg)
+const result = await gateway.call('upimg_upload', { file: cardBuffer })
+
+// Send Telegram notifications
+await telegram.send('New tweet card generated for @user')
+```
+
+See the `@jeffrey0117/cloudpipe` package for full API.
