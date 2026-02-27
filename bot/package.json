@@ -1,0 +1,13 @@
+{
+  "name": "xcard-bot",
+  "version": "1.0.0",
+  "description": "XCard Telegram Bot — tweet to card PNG + AI social post",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "puppeteer": "^24.2.1",
+    "qrcode-generator": "^1.4.4"
+  }
+}
